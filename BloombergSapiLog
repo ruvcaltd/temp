@@ -14,3 +14,6 @@ CREATE TABLE BloombergSapiLog (
     ErrorDetails NVARCHAR(MAX) NULL,                 -- Detailed error information (if any)
     Metadata NVARCHAR(MAX) NULL                      -- Additional metadata (e.g., session IDs)
 );
+
+
+dotnet ef dbcontext scaffold "Server=your_server;Database=MyDatabase;User Id=your_user;Password=your_password;" Microsoft.EntityFrameworkCore.SqlServer --table BloombergSapiLog --schema dbo -o DataModels -c BloombergDbContext
