@@ -1,0 +1,192 @@
+public class BloombergLogEntry
+{
+    public string CorrelationId { get; set; }
+    public string RequestPayload { get; set; }
+    public string ResponsePayload { get; set; }
+    public DateTime RequestTimestamp { get; set; } = DateTime.UtcNow;
+    public int? StatusCode { get; set; }
+    public string StatusMessage { get; set; }
+}
+
+public class BloombergLogProcessor
+{
+    private readonly Queue<BloombergLogEntry> _requestQueue = new();
+    private readonly Queue<BloombergLogEntry> _responseQueue = new();
+    private readonly Dictionary<string, BloombergLogEntry> _pendingRequests = new();
+
+    private readonly TimeSpan _timeout = TimeSpan.FromMinutes(5);
+
+    public void EnqueueRequest(BloombergLogEntry logEntry)
+    {
+        lock (_requestQueue)
+        {
+            _requestQueue.Enqueue(logEntry);
+        }
+    }
+
+    public void EnqueueResponse(string correlationId, string responsePayload, int statusCode, string statusMessage)
+    {
+        lock (_pendingRequests)
+        {
+            if (_pendingRequests.TryGetValue(correlationId, out var logEntry))
+            {
+                logEntry.ResponsePayload = responsePayload;
+                logEntry.StatusCode = statusCode;
+                logEntry.StatusMessage = statusMessage;
+
+                lock (_responseQueue)
+                {
+                    _responseQueue.Enqueue(logEntry);
+                }
+                _pendingRequests.Remove(correlationId);
+            }
+        }
+    }
+}
+
+public class RequestProcessorWorker
+{
+    private readonly BloombergLogProcessor _logProcessor;
+
+    public RequestProcessorWorker(BloombergLogProcessor logProcessor)
+    {
+        _logProcessor = logProcessor;
+    }
+
+    public async Task StartAsync(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            BloombergLogEntry logEntry;
+            lock (_logProcessor.RequestQueue)
+            {
+                if (_logProcessor.RequestQueue.Count == 0)
+                {
+                    await Task.Delay(500, cancellationToken);
+                    continue;
+                }
+                logEntry = _logProcessor.RequestQueue.Dequeue();
+            }
+
+            lock (_logProcessor.PendingRequests)
+            {
+                _logProcessor.PendingRequests[logEntry.CorrelationId] = logEntry;
+            }
+        }
+    }
+}
+
+public class TimeoutMonitorWorker
+{
+    private readonly BloombergLogProcessor _logProcessor;
+
+    public TimeoutMonitorWorker(BloombergLogProcessor logProcessor)
+    {
+        _logProcessor = logProcessor;
+    }
+
+    public async Task StartAsync(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            var now = DateTime.UtcNow;
+            var expiredRequests = new List<BloombergLogEntry>();
+
+            lock (_logProcessor.PendingRequests)
+            {
+                foreach (var entry in _logProcessor.PendingRequests.Values)
+                {
+                    if (now - entry.RequestTimestamp > _logProcessor.Timeout)
+                    {
+                        expiredRequests.Add(entry);
+                    }
+                }
+
+                foreach (var expiredRequest in expiredRequests)
+                {
+                    _logProcessor.PendingRequests.Remove(expiredRequest.CorrelationId);
+                    lock (_logProcessor.ResponseQueue)
+                    {
+                        _logProcessor.ResponseQueue.Enqueue(expiredRequest);
+                    }
+                }
+            }
+
+            await Task.Delay(1000, cancellationToken); // Check every second
+        }
+    }
+}
+
+public class ResponseProcessorWorker
+{
+    private readonly BloombergLogProcessor _logProcessor;
+    private readonly IBloombergSapiLogRepository _repository;
+
+    public ResponseProcessorWorker(BloombergLogProcessor logProcessor, IBloombergSapiLogRepository repository)
+    {
+        _logProcessor = logProcessor;
+        _repository = repository;
+    }
+
+    public async Task StartAsync(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            var batch = new List<BloombergLogEntry>();
+
+            lock (_logProcessor.ResponseQueue)
+            {
+                while (_logProcessor.ResponseQueue.Count > 0 && batch.Count < 100)
+                {
+                    batch.Add(_logProcessor.ResponseQueue.Dequeue());
+                }
+            }
+
+            if (batch.Count > 0)
+            {
+                await _repository.AddLogsInBatchAsync(batch); // Batch insert into the database
+            }
+
+            await Task.Delay(500, cancellationToken); // Process batches every 500ms
+        }
+    }
+}
+
+public interface IBloombergSapiLogRepository
+{
+    Task AddLogsInBatchAsync(List<BloombergLogEntry> logs);
+}
+
+public class BloombergSapiLogRepository : IBloombergSapiLogRepository
+{
+    private readonly DbContext _context;
+
+    public BloombergSapiLogRepository(DbContext context)
+    {
+        _context = context;
+    }
+
+    public async Task AddLogsInBatchAsync(List<BloombergLogEntry> logs)
+    {
+        _context.Set<BloombergSapiLog>().AddRange(logs);
+        await _context.SaveChangesAsync();
+    }
+}
+
+
+
+
+var logProcessor = new BloombergLogProcessor();
+var repository = new BloombergSapiLogRepository(context);
+
+var requestWorker = new RequestProcessorWorker(logProcessor);
+var timeoutWorker = new TimeoutMonitorWorker(logProcessor);
+var responseWorker = new ResponseProcessorWorker(logProcessor, repository);
+
+var cts = new CancellationTokenSource();
+await Task.WhenAll(
+    requestWorker.StartAsync(cts.Token),
+    timeoutWorker.StartAsync(cts.Token),
+    responseWorker.StartAsync(cts.Token)
+);
+
