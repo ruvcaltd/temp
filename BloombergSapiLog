@@ -1,0 +1,16 @@
+CREATE TABLE BloombergSapiLog (
+    LogID INT IDENTITY(1,1) PRIMARY KEY,              -- Unique identifier for each log entry
+    RequestType NVARCHAR(50) NOT NULL,               -- Type of request (e.g., "Authentication", "Data", "Reference")
+    Endpoint NVARCHAR(255) NOT NULL,                 -- The Bloomberg SAPI endpoint called
+    RequestPayload NVARCHAR(MAX) NULL,               -- JSON or raw request payload sent
+    ResponsePayload NVARCHAR(MAX) NULL,              -- JSON or raw response payload received
+    StatusCode INT NULL,                              -- HTTP or SAPI-specific status code
+    StatusMessage NVARCHAR(255) NULL,                -- Short message about the status (e.g., "Success", "Failed")
+    Timestamp DATETIME NOT NULL DEFAULT GETDATE(),   -- When the request was logged
+    DurationMs INT NULL,                              -- Duration of the request in milliseconds
+    ApiKey NVARCHAR(100) NULL,                       -- API Key used (if applicable)
+    User NVARCHAR(100) NULL,                         -- User making the request (if applicable)
+    ClientIP NVARCHAR(50) NULL,                      -- IP address of the client making the call
+    ErrorDetails NVARCHAR(MAX) NULL,                 -- Detailed error information (if any)
+    Metadata NVARCHAR(MAX) NULL                      -- Additional metadata (e.g., session IDs)
+);
