@@ -15,5 +15,71 @@ CREATE TABLE BloombergSapiLog (
     Metadata NVARCHAR(MAX) NULL                      -- Additional metadata (e.g., session IDs)
 );
 
+public interface IBloombergSapiLogRepository
+{
+    Task<int> AddRequestLogAsync(BloombergSapiLog log);
+    Task UpdateResponseLogAsync(string correlationId, string responsePayload, int statusCode, string statusMessage);
+}
 
-dotnet ef dbcontext scaffold "Server=your_server;Database=MyDatabase;User Id=your_user;Password=your_password;" Microsoft.EntityFrameworkCore.SqlServer --table BloombergSapiLog --schema dbo -o DataModels -c BloombergDbContext
+public class BloombergSapiLogRepository : IBloombergSapiLogRepository
+{
+    private readonly DbContext _context; // Replace with your actual DbContext class
+
+    public BloombergSapiLogRepository(DbContext context)
+    {
+        _context = context;
+    }
+
+    // Add a new log entry for the request
+    public async Task<int> AddRequestLogAsync(BloombergSapiLog log)
+    {
+        _context.Set<BloombergSapiLog>().Add(log);
+        await _context.SaveChangesAsync();
+        return log.LogID; // Return the LogID of the inserted row
+    }
+
+    // Update the log entry with the response based on CorrelationId
+    public async Task UpdateResponseLogAsync(string correlationId, string responsePayload, int statusCode, string statusMessage)
+    {
+        var log = await _context.Set<BloombergSapiLog>()
+            .FirstOrDefaultAsync(l => l.CorrelationId == correlationId);
+
+        if (log == null)
+            throw new KeyNotFoundException($"Log with CorrelationId '{correlationId}' not found.");
+
+        log.ResponsePayload = responsePayload;
+        log.StatusCode = statusCode;
+        log.StatusMessage = statusMessage;
+        log.DurationMs = (int)(DateTime.UtcNow - log.Timestamp).TotalMilliseconds;
+
+        await _context.SaveChangesAsync();
+    }
+}
+
+
+var repository = new BloombergSapiLogRepository(context);
+
+var newLog = new BloombergSapiLog
+{
+    RequestType = "Authentication",
+    Endpoint = "/auth",
+    RequestPayload = "{ 'apiKey': 'XYZ' }",
+    CorrelationId = Guid.NewGuid().ToString(), // Generate CorrelationId
+    ApiKey = "XYZ",
+    User = "test_user",
+    ClientIP = "192.168.1.1",
+    Metadata = "Additional info"
+};
+
+int logId = await repository.AddRequestLogAsync(newLog);
+Console.WriteLine($"Log entry created with LogID: {logId}");
+
+
+
+await repository.UpdateResponseLogAsync(
+    correlationId: "existing-correlation-id",
+    responsePayload: "{ 'success': true }",
+    statusCode: 200,
+    statusMessage: "OK"
+);
+Console.WriteLine("Log entry updated with response details.");
